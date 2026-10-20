@@ -1,0 +1,62 @@
+# gitlab pipeline with Docker build, push and Deploy to AKS
+
+stages:
+  - build
+  - deploy
+
+variables:
+  ACR_NAME: "nisargacr"
+  ACR_LOGIN_SERVER: "nisargacr.azurecr.io"
+  IMAGE_NAME: "axionui"
+  AKS_NAMESPACE: "default"
+
+build-and-push:
+  stage: build
+  image: docker:latest
+  services:
+    - name: docker:dind
+      alias: docker
+  variables:
+    DOCKER_DRIVER: overlay2
+  script:
+    - echo "Logging in to Azure Container Registry..."
+    - docker login $ACR_LOGIN_SERVER -u "$ACR_USERNAME" -p "$ACR_PASSWORD"
+    
+    - echo "Building Docker image..."
+    - IMAGE_TAG=$CI_PIPELINE_IID
+    - docker build -t $ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG .
+    
+    - echo "Pushing Docker image..."
+    - docker push $ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG
+    
+    # Pass the image tag to the deploy job using dotenv artifacts
+    - echo "IMAGE_TAG=$IMAGE_TAG" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy-to-aks:
+  stage: deploy
+  image: mcr.microsoft.com/azure-cli:latest
+  needs:
+    - build-and-push
+  script:
+    - echo "Installing kubectl..."
+    - az aks install-cli
+    
+    - echo "Logging in to Azure..."
+    - az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
+    
+    - echo "Setting AKS context..."
+    - az aks get-credentials --resource-group "$AKS_RESOURCE_GROUP" --name "$AKS_CLUSTER_NAME" --overwrite-existing
+    
+    - echo "Updating deployment manifest with new image tag..."
+    # This updates the image reference in deployment.yaml dynamically
+    - sed -i "s|\${ACR_LOGIN_SERVER}/\${IMAGE_NAME}:.*|$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG|g" manifests/deployment.yaml
+    
+    - echo "Applying Kubernetes manifests..."
+    - kubectl apply -f manifests/*.yaml -n $AKS_NAMESPACE
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
