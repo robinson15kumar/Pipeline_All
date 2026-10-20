@@ -1,0 +1,44 @@
+# Azure pipeline with Docker build, push and Deploy to AKS
+# Refer : https://dev.azure.com/RohtasITSolutions/_git/Axion
+
+trigger:
+  - main
+
+pool:
+  name: RohtasPool
+
+stages:
+  - stage: BuildStage
+    displayName: Build using Docker
+    jobs:
+      - job: dockerbuild
+        displayName: Docker build and push
+        steps:
+          - task: Docker@2
+            displayName: Build and push image
+            inputs:
+              containerRegistry: 'AcrUserPass'  # AcrUserPass is service connection created in ADO for Azure ACR
+              repository: 'axionui'             # Respository for Azure ACR (nisargacr)
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+
+  - stage: DeployAKS
+    displayName: Deploy to Kubernetes Dev
+    dependsOn: BuildStage
+    jobs:
+      - job: deployDev
+        displayName: Deploy Axionui
+        steps:
+          - task: KubernetesManifest@1
+            displayName: Deploy Kubernetes manifests
+            inputs:
+              action: 'deploy'
+              connectionType: 'kubernetesServiceConnection'
+              kubernetesServiceEndpoint: 'AKSConnect' # AKSConnect is service connection created in ADO for Kubernetes
+              manifests: |                            # Manifest files for Kubernetes Objects
+                $(Build.SourcesDirectory)/manifests/deployment.yaml  
+                $(Build.SourcesDirectory)/manifests/service.yaml
+              containers: |
+                nisargacr.azurecr.io/axionui:$(Build.BuildId)
